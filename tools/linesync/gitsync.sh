@@ -6,7 +6,7 @@
 # and conditions as specified in the GNU General Public License.
 #
 # This program should be run from crontab, i.e something like:
-# 0 0 * * * /home/irc/bin/linesync.sh /home/irc/lib/ircd.conf /home/irc/lib/ircd.pid
+# 0 0 * * * /home/irc/bin/gitsync.sh -s /home/irc/.ssh/id_rsa /home/irc/lib/ircd.conf /home/irc/lib/ircd.pid
 #
 
 usage() {
@@ -216,7 +216,8 @@ fi
 prevdir=`pwd`
 cd "$lpath"
 git reset -q --hard origin/master
-git pull --tags --quiet
+git fetch --tags -f --quiet
+git merge -q origin/master
 if [ ! -z "$certtag" ]; then
     #Store the cert in a temp file
     git show "$certtag" > "$TMPCERT"
