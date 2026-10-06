@@ -20,6 +20,9 @@
  * $Id: ircd_lexer.l 1851 2007-11-30 22:10:04Z klmitch $
  */
 
+%option nounput
+%option noinput
+
 %{
 #include <unistd.h>
 #include <stdio.h>
@@ -57,6 +60,7 @@ static struct lexer_token {
   TOKEN(RECVQ),
   TOKEN(NAME),
   TOKEN(HOST),
+  TOKEN(FROM),
   TOKEN(IP),
   TOKEN(USERNAME),
   TOKEN(PASS),
@@ -334,7 +338,7 @@ init_lexer_file(char* file)
   return 1;
 }
 
-int next_lexer_file()
+int next_lexer_file(void)
 {
   if (--include_stack_ptr < 0)
     return 1;

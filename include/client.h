@@ -219,6 +219,7 @@ enum Flag
     FLAG_SSL,                       /**< User is connected via SSL (+z) */
     FLAG_STARTTLS,                  /**< User is connecting with StartTLS */
     FLAG_SSLNEEDACCEPT,             /**< Client needs SSL_accept() to be called again */
+    FLAG_SSLNEEDCONNECT,            /**< Outbound TLS handshake pending: SSL_connect() again */
 
     FLAG_IPCEXEMPT,                 /**< User is IPcheck exempt */
     FLAG_IPCNOTEXEMPT,              /**< User is not IPcheck exempt */
@@ -237,6 +238,10 @@ enum Flag
     FLAG_OPERED_REMOTE,             /**< Client /OPER'ed using a remote O:Line */
     FLAG_SERVER_NOOP,               /**< Server has been NOOP'ed */
     FLAG_SENT_CVERSION,             /**< Client's CTCP VERSION reply has been sent out */
+    FLAG_MULTILINE_EXPAND,          /**< +M User opts into full multiline expansion (IRCv3 branch) */
+    FLAG_NOSTORAGE,                 /**< +Y User's messages are not stored in chathistory (IRCv3 branch) */
+    FLAG_PM_OPTOUT,                 /**< +y User opted out of PM history storage (IRCv3 branch) */
+    FLAG_BNC_HOLDPREF,              /**< +b User prefers bouncer hold mode (IRCv3 branch) */
 
     FLAG_LAST_FLAG,                 /**< number of flags */
     FLAG_LOCAL_UMODES = FLAG_LOCOP, /**< First local mode flag */
@@ -787,6 +792,7 @@ struct Client {
 #define IsStartTLS(x)           HasFlag(x, FLAG_STARTTLS)
 /** Return non-zero if the client still needs SSL_accept(). */
 #define IsSSLNeedAccept(x)      HasFlag(x, FLAG_SSLNEEDACCEPT)
+#define IsSSLNeedConnect(x)     HasFlag(x, FLAG_SSLNEEDCONNECT)
 /** Return non-zero if the client is IPcheck exempt. */
 #define IsIPCheckExempt(x)      HasFlag(x, FLAG_IPCEXEMPT)
 /** Return non-zero if the client is not IPcheck exempt. */
@@ -907,6 +913,7 @@ struct Client {
 #define SetStartTLS(x)          SetFlag(x, FLAG_STARTTLS)
 /** Mark a client as needing SSL_accept(). */
 #define SetSSLNeedAccept(x)     SetFlag(x, FLAG_SSLNEEDACCEPT)
+#define SetSSLNeedConnect(x)    SetFlag(x, FLAG_SSLNEEDCONNECT)
 /** Mark a client as IPcheck exempt. */
 #define SetIPCheckExempt(x)     SetFlag(x, FLAG_IPCEXEMPT)
 /** Mark a client as not IPcheck exempt. */
@@ -1012,6 +1019,7 @@ struct Client {
 #define ClearStartTLS(x)        ClrFlag(x, FLAG_STARTTLS)
 /** Client no longer needs SSL_accept(). */
 #define ClearSSLNeedAccept(x)   ClrFlag(x, FLAG_SSLNEEDACCEPT)
+#define ClearSSLNeedConnect(x)  ClrFlag(x, FLAG_SSLNEEDCONNECT)
 /** Clear the client's join restriction. */
 #define ClearRestrictJoin(x)    ClrFlag(x, FLAG_RESTRICT_JOIN)
 /** Clear the client's PRIVMSG/NOTICE restriction. */

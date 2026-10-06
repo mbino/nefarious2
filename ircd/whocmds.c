@@ -215,6 +215,8 @@ void do_who(struct Client* sptr, struct Client* acptr, struct Channel* repchan,
       *(p1++) = 'x';
     if (IsSSL(acptr))
       *(p1++) = 'z';
+    if (IsBot(acptr))
+      *(p1++) = 'B';
   }
 
   if (!fields || (fields & WHO_FIELD_DIS))
@@ -286,7 +288,10 @@ void do_who(struct Client* sptr, struct Client* acptr, struct Channel* repchan,
         p2 += strlen(dp->value.cp);
         *p2++ = ',';
       }
-      *--p2 = '\0';
+      if (p2 > (char *)&markbuf)
+        *--p2 = '\0';  /* Replace trailing comma with null */
+      else
+        *p2 = '\0';    /* Empty string if no marks */
 
       if (len > 128)
         strncpy((char *)&markbuf, "*ManyMarks*", 12);

@@ -171,6 +171,7 @@ enum IAuthFlag
   IAUTH_SSLFP,                          /**< Enable Nefarious SSL client certificate fingerprint notifcation. */
   IAUTH_ACCOUNT,                        /**< Enable Nefarious SASL account notification. */
   IAUTH_EVENTS,                         /**< Enable Nefarious Event notifications. */
+  IAUTH_SASL,                           /**< Enable SASL authentication handling in IAuth. */
   IAUTH_LAST_FLAG                       /**< total number of flags */
 };
 /** Declare a bitset structure indexed by IAuthFlag. */
@@ -276,7 +277,7 @@ static int auth_set_username(struct AuthRequest *auth)
 
   if (FlagHas(&auth->flags, AR_IAUTH_FUSERNAME))
   {
-    ircd_strncpy(user->username, cli_username(sptr), USERLEN);
+    ircd_strncpy(user->username, cli_username(sptr), USERLEN + 1);
   }
   else if (IsIdented(sptr))
   {
@@ -432,7 +433,7 @@ static void auth_complete_sasl(struct Client *client)
   if (IsSASLComplete(client) && cli_saslaccount(client)[0]) {
     if (cli_saslacccreate(client))
       cli_user(client)->acc_create = cli_saslacccreate(client);
-    ircd_strncpy(cli_user(client)->account, cli_saslaccount(client), ACCOUNTLEN);
+    ircd_strncpy(cli_user(client)->account, cli_saslaccount(client), ACCOUNTLEN + 1);
     SetAccount(client);
   }
 
@@ -653,8 +654,8 @@ static int preregister_user(struct Client *cptr)
   static time_t last_too_many1;
   static time_t last_too_many2;
 
-  ircd_strncpy(cli_user(cptr)->host, cli_sockhost(cptr), HOSTLEN);
-  ircd_strncpy(cli_user(cptr)->realhost, cli_sockhost(cptr), HOSTLEN);
+  ircd_strncpy(cli_user(cptr)->host, cli_sockhost(cptr), HOSTLEN + 1);
+  ircd_strncpy(cli_user(cptr)->realhost, cli_sockhost(cptr), HOSTLEN + 1);
 
   /* Set client's GeoIP data */
   geoip_apply(cptr);
@@ -851,7 +852,7 @@ static void read_auth_reply(struct AuthRequest* auth)
       sendheader(auth->client, REPORT_FIN_ID);
     ++ServerStats->is_asuc;
     if (!FlagHas(&auth->flags, AR_IAUTH_USERNAME)) {
-      ircd_strncpy(cli_username(auth->client), username, USERLEN);
+      ircd_strncpy(cli_username(auth->client), username, USERLEN + 1);
       SetGotId(auth->client);
     }
     if (IAuthHas(iauth, IAUTH_UNDERNET))
@@ -1055,9 +1056,9 @@ static void auth_dns_callback(void* vptr, const struct irc_in_addr *addr, const 
     if (IsUserPort(auth->client))
       sendheader(auth->client, REPORT_FIN_DNS);
     if (IsIPSpoofed(auth->client))
-      ircd_strncpy(cli_connecthost(auth->client), h_name, HOSTLEN);
+      ircd_strncpy(cli_connecthost(auth->client), h_name, HOSTLEN + 1);
     else
-      ircd_strncpy(cli_sockhost(auth->client), h_name, HOSTLEN);
+      ircd_strncpy(cli_sockhost(auth->client), h_name, HOSTLEN + 1);
     sendto_iauth(auth->client, "N %s", h_name);
   }
   check_auth_finished(auth);
@@ -1170,13 +1171,15 @@ void start_auth(struct Client* client)
   assert(0 != client);
   Debug((DEBUG_INFO, "Beginning auth request on client %p", client));
 
-  /* Register with event handlers. */
+  /* Register with event handlers.  The socket's event interest is
+   * add_connection's: readable from registration, and while a TLS
+   * handshake is pending whatever OpenSSL asks for (writable interest
+   * armed there must survive this call). */
   cli_lasttime(client) = CurrentTime;
   cli_since(client) = CurrentTime;
   if (cli_fd(client) > HighestFd)
     HighestFd = cli_fd(client);
   LocalClientArray[cli_fd(client)] = client;
-  socket_events(&(cli_socket(client)), SOCK_ACTION_SET | SOCK_EVENT_READABLE);
 
   /* Allocate the AuthRequest. */
   auth = auth_freelist;
@@ -1267,9 +1270,9 @@ int auth_set_user(struct AuthRequest *auth, const char *username, const char *ho
     return 0;
   FlagClr(&auth->flags, AR_NEEDS_USER);
   cptr = auth->client;
-  ircd_strncpy(cli_info(cptr), userinfo, REALLEN);
+  ircd_strncpy(cli_info(cptr), userinfo, REALLEN + 1);
   clean_username(cli_user(cptr)->username, username);
-  ircd_strncpy(cli_user(cptr)->host, cli_sockhost(cptr), HOSTLEN);
+  ircd_strncpy(cli_user(cptr)->host, cli_sockhost(cptr), HOSTLEN + 1);
   if (IAuthHas(iauth, IAUTH_UNDERNET))
     sendto_iauth(cptr, "U %s %s %s :%s", cli_user(cptr)->username, hostname, servername, userinfo);
   else if (IAuthHas(iauth, IAUTH_ADDLINFO))
@@ -1374,11 +1377,12 @@ void auth_set_originalip(struct AuthRequest *auth, const struct irc_in_addr addr
 int auth_set_webirc_trusted(struct AuthRequest *auth, const char *password, const char *username, const char *hostname, const char *ip, const char *opts)
 {
   assert(auth != NULL);
-  if (IAuthHas(iauth, IAUTH_WEBIRC))
+  if (IAuthHas(iauth, IAUTH_WEBIRC)) {
     if (opts != NULL)
       sendto_iauth(auth->client, "w %s %s %s %s :%s", password, username, hostname, ip, opts);
     else
       sendto_iauth(auth->client, "w %s %s %s %s", password, username, hostname, ip);
+  }
   return 0;
 }
 
@@ -1429,6 +1433,59 @@ int auth_cap_done(struct AuthRequest *auth)
   assert(auth != NULL);
   FlagClr(&auth->flags, AR_CAP_PENDING);
   return check_auth_finished(auth);
+}
+
+/** Check if IAuth is configured to handle SASL authentication.
+ * @return Non-zero if IAuth handles SASL, zero otherwise.
+ */
+int auth_iauth_handles_sasl(void)
+{
+  return IAuthHas(iauth, IAUTH_SASL);
+}
+
+/** Send SASL authentication start to IAuth.
+ * @param[in] cptr Client starting SASL.
+ * @param[in] mechanism SASL mechanism name.
+ * @param[in] certfp SSL certificate fingerprint (may be NULL).
+ * @return Non-zero on success, zero on failure.
+ */
+int auth_send_sasl_start(struct Client *cptr, const char *mechanism, const char *certfp)
+{
+  if (!IAuthHas(iauth, IAUTH_SASL))
+    return 0;
+
+  if (!EmptyString(certfp))
+    return sendto_iauth(cptr, "A S %s :%s", mechanism, certfp);
+  else
+    return sendto_iauth(cptr, "A S :%s", mechanism);
+}
+
+/** Send SASL host information to IAuth.
+ * @param[in] cptr Client authenticating.
+ * @param[in] username Client's username.
+ * @param[in] host Client's hostname.
+ * @param[in] ip Client's IP address.
+ * @return Non-zero on success, zero on failure.
+ */
+int auth_send_sasl_host(struct Client *cptr, const char *username, const char *host, const char *ip)
+{
+  if (!IAuthHas(iauth, IAUTH_SASL))
+    return 0;
+
+  return sendto_iauth(cptr, "A H :%s@%s:%s", username, host, ip);
+}
+
+/** Send SASL authentication data to IAuth.
+ * @param[in] cptr Client authenticating.
+ * @param[in] data Base64-encoded SASL data.
+ * @return Non-zero on success, zero on failure.
+ */
+int auth_send_sasl_data(struct Client *cptr, const char *data)
+{
+  if (!IAuthHas(iauth, IAUTH_SASL))
+    return 0;
+
+  return sendto_iauth(cptr, "a :%s", data);
 }
 
 /** Attempt to spawn the process for an IAuth instance.
@@ -1567,7 +1624,7 @@ int iauth_do_spawn(struct IAuth *iauth, int automatic)
 /** Restart an %IAuth program.
  * @return 0 on failure, 1 on success, 2 on no IAuth program.
  */
-int auth_restart()
+int auth_restart(void)
 {
   static struct IAuth *iauthnew;
   int ii;
@@ -1827,6 +1884,7 @@ static int iauth_cmd_policy(struct IAuth *iauth, struct Client *cli,
     case 'F': IAuthSet(iauth, IAUTH_SSLFP); break;
     case 'r': IAuthSet(iauth, IAUTH_ACCOUNT); break;
     case 'e': IAuthSet(iauth, IAUTH_EVENTS); break;
+    case 'S': IAuthSet(iauth, IAUTH_SASL); break;
     }
 
   /* Optionally notify operators. */
@@ -1995,7 +2053,7 @@ static int iauth_cmd_username_forced(struct IAuth *iauth, struct Client *cli,
   assert(cli_auth(cli) != NULL);
   FlagClr(&cli_auth(cli)->flags, AR_AUTH_PENDING);
   if (!EmptyString(params[0])) {
-    ircd_strncpy(cli_username(cli), params[0], USERLEN);
+    ircd_strncpy(cli_username(cli), params[0], USERLEN + 1);
     SetGotId(cli);
     FlagSet(&cli_auth(cli)->flags, AR_IAUTH_USERNAME);
     FlagSet(&cli_auth(cli)->flags, AR_IAUTH_FUSERNAME);
@@ -2016,7 +2074,7 @@ static int iauth_cmd_username_good(struct IAuth *iauth, struct Client *cli,
   assert(cli_auth(cli) != NULL);
   FlagClr(&cli_auth(cli)->flags, AR_AUTH_PENDING);
   if (!EmptyString(params[0])) {
-    ircd_strncpy(cli_username(cli), params[0], USERLEN);
+    ircd_strncpy(cli_username(cli), params[0], USERLEN + 1);
     SetGotId(cli);
     FlagSet(&cli_auth(cli)->flags, AR_IAUTH_USERNAME);
   }
@@ -2036,7 +2094,7 @@ static int iauth_cmd_username_bad(struct IAuth *iauth, struct Client *cli,
   assert(cli_auth(cli) != NULL);
   FlagClr(&cli_auth(cli)->flags, AR_AUTH_PENDING);
   if (!EmptyString(params[0]))
-    ircd_strncpy(cli_user(cli)->username, params[0], USERLEN);
+    ircd_strncpy(cli_user(cli)->username, params[0], USERLEN + 1);
   return 1;
 }
 
@@ -2071,19 +2129,19 @@ static int iauth_cmd_hostname(struct IAuth *iauth, struct Client *cli,
   /* Copy old details to cli_connectip and cli_connecthost. */
   if (!IsIPSpoofed(cli)) {
     memcpy(&cli_connectip(cli), &cli_ip(cli), sizeof(cli_ip(cli)));
-    ircd_strncpy(cli_connecthost(cli), cli_sockhost(cli), HOSTLEN);
+    ircd_strncpy(cli_connecthost(cli), cli_sockhost(cli), HOSTLEN + 1);
     SetIPSpoofed(cli);
   }
 
   /* Set hostname from params. */
-  ircd_strncpy(cli_sockhost(cli), params[0], HOSTLEN);
+  ircd_strncpy(cli_sockhost(cli), params[0], HOSTLEN + 1);
   /* If we have gotten here, the user is in a "hurry" state and has
    * been pre-registered.  Their hostname was set during that, and
    * needs to be overwritten now.
    */
   if (FlagHas(&auth->flags, AR_IAUTH_HURRY)) {
-    ircd_strncpy(cli_user(cli)->host, cli_sockhost(cli), HOSTLEN);
-    ircd_strncpy(cli_user(cli)->realhost, cli_sockhost(cli), HOSTLEN);
+    ircd_strncpy(cli_user(cli)->host, cli_sockhost(cli), HOSTLEN + 1);
+    ircd_strncpy(cli_user(cli)->realhost, cli_sockhost(cli), HOSTLEN + 1);
   }
   return 1;
 }
@@ -2120,7 +2178,7 @@ static int iauth_cmd_ip_address(struct IAuth *iauth, struct Client *cli,
   /* Copy old details to cli_connectip and cli_connecthost. */
   if (!IsIPSpoofed(cli)) {
     memcpy(&cli_connectip(cli), &cli_ip(cli), sizeof(cli_ip(cli)));
-    ircd_strncpy(cli_connecthost(cli), cli_sockhost(cli), HOSTLEN);
+    ircd_strncpy(cli_connecthost(cli), cli_sockhost(cli), HOSTLEN + 1);
     SetIPSpoofed(cli);
   }
 
@@ -2283,7 +2341,7 @@ static int iauth_cmd_done_account(struct IAuth *iauth, struct Client *cli,
   }
 
   /* Copy account name to User structure. */
-  ircd_strncpy(cli_user(cli)->account, params[0], ACCOUNTLEN);
+  ircd_strncpy(cli_user(cli)->account, params[0], ACCOUNTLEN + 1);
   SetAccount(cli);
 
   /* Fall through to the normal "done" handler. */
@@ -2324,7 +2382,7 @@ static int iauth_cmd_mark(struct IAuth *iauth, struct Client *cli,
   }
   /* params[0] == type, params[1] == data */
   if (!ircd_strcmp(params[0], MARK_WEBIRC)) {
-    ircd_strncpy(cli_webirc(cli), params[1], BUFSIZE);
+    ircd_strncpy(cli_webirc(cli), params[1], BUFSIZE + 1);
   } else if (!ircd_strcmp(params[0], MARK_GEOIP)) {
     if ((parc < 3) || EmptyString(params[1]) || EmptyString(params[2])) {
       sendto_iauth(cli, "E Missing :Missing mark geoip parameter");
@@ -2332,11 +2390,11 @@ static int iauth_cmd_mark(struct IAuth *iauth, struct Client *cli,
     }
     geoip_apply_mark(cli, params[1], params[2], (parc > 3 ? params[3] : NULL));
   } else if (!ircd_strcmp(params[0], MARK_CVERSION)) {
-    ircd_strncpy(cli_version(cli), params[1], VERSIONLEN);
+    ircd_strncpy(cli_version(cli), params[1], VERSIONLEN + 1);
   } else if (!ircd_strcmp(params[0], MARK_SSLCLIFP)) {
-    ircd_strncpy(cli_sslclifp(cli), params[1], BUFSIZE);
+    ircd_strncpy(cli_sslclifp(cli), params[1], BUFSIZE + 1);
   } else if (!ircd_strcmp(params[0], MARK_KILL)) {
-    ircd_strncpy(cli_killmark(cli), params[1], BUFSIZE);
+    ircd_strncpy(cli_killmark(cli), params[1], BUFSIZE + 1);
   } else if (!ircd_strcmp(params[0], MARK_MARK) || !ircd_strcmp(params[0], MARK_DNSBL_DATA)) {
     add_mark(cli, params[1]);
     SetMarked(cli);
@@ -2428,6 +2486,117 @@ static int iauth_cmd_xquery(struct IAuth *iauth, struct Client *cli,
   return 0;
 }
 
+/** Handle SASL challenge from IAuth.
+ * @param[in] iauth Active IAuth session.
+ * @param[in] cli Client referenced by command.
+ * @param[in] parc Number of parameters (1).
+ * @param[in] params Challenge data (base64).
+ * @return Zero.
+ */
+static int iauth_cmd_sasl_challenge(struct IAuth *iauth, struct Client *cli,
+                                    int parc, char **params)
+{
+  if (EmptyString(params[0]))
+    return 0;
+
+  /* Forward challenge to client */
+  sendrawto_one(cli, "AUTHENTICATE %s", params[0]);
+  return 0;
+}
+
+/** Handle SASL login success from IAuth.
+ * @param[in] iauth Active IAuth session.
+ * @param[in] cli Client referenced by command.
+ * @param[in] parc Number of parameters (1+).
+ * @param[in] params Account name.
+ * @return Non-zero to check auth completion.
+ */
+static int iauth_cmd_sasl_loggedin(struct IAuth *iauth, struct Client *cli,
+                                   int parc, char **params)
+{
+  size_t len;
+
+  if (EmptyString(params[0])) {
+    sendto_iauth(cli, "E Missing :Missing account parameter");
+    return 0;
+  }
+
+  /* Check length of account name. */
+  len = strcspn(params[0], ": ");
+  if (len > ACCOUNTLEN) {
+    sendto_iauth(cli, "E Invalid :Account parameter too long");
+    return 0;
+  }
+
+  /* Store account in SASL fields */
+  ircd_strncpy(cli_saslaccount(cli), params[0], ACCOUNTLEN + 1);
+
+  /* If account has a creation timestamp, use it. */
+  if (params[0][len] == ':') {
+    cli_saslacccreate(cli) = strtoul(params[0] + len + 1, NULL, 10);
+  }
+
+  /* Send RPL_LOGGEDIN to client */
+  send_reply(cli, RPL_LOGGEDIN, cli_name(cli), cli_user(cli) ? cli_user(cli)->username : "*",
+             cli_user(cli) ? cli_user(cli)->host : "*", cli_saslaccount(cli), cli_saslaccount(cli));
+
+  return 0;
+}
+
+/** Handle SASL authentication failure from IAuth.
+ * @param[in] iauth Active IAuth session.
+ * @param[in] cli Client referenced by command.
+ * @param[in] parc Number of parameters.
+ * @param[in] params Unused.
+ * @return Zero.
+ */
+static int iauth_cmd_sasl_fail(struct IAuth *iauth, struct Client *cli,
+                               int parc, char **params)
+{
+  send_reply(cli, ERR_SASLFAIL, EmptyString(params[0]) ? "" : params[0]);
+  return 0;
+}
+
+/** Handle SASL mechanism list from IAuth.
+ * @param[in] iauth Active IAuth session.
+ * @param[in] cli Client referenced by command.
+ * @param[in] parc Number of parameters (1).
+ * @param[in] params Mechanism list.
+ * @return Zero.
+ */
+static int iauth_cmd_sasl_mechs(struct IAuth *iauth, struct Client *cli,
+                                int parc, char **params)
+{
+  if (EmptyString(params[0]))
+    return 0;
+
+  send_reply(cli, ERR_SASLMECHS, params[0]);
+  return 0;
+}
+
+/** Handle SASL authentication success (done) from IAuth.
+ * @param[in] iauth Active IAuth session.
+ * @param[in] cli Client referenced by command.
+ * @param[in] parc Number of parameters.
+ * @param[in] params Unused.
+ * @return Zero.
+ */
+static int iauth_cmd_sasl_done(struct IAuth *iauth, struct Client *cli,
+                               int parc, char **params)
+{
+  /* Mark SASL as complete */
+  SetFlag(cli, FLAG_SASLCOMPLETE);
+
+  /* Send success to client */
+  send_reply(cli, RPL_SASLSUCCESS);
+
+  /* Cancel SASL timeout */
+  if (t_active(&cli_sasltimeout(cli)))
+    timer_del(&cli_sasltimeout(cli));
+
+  return 0;
+}
+
 /** Parse a \a message from \a iauth.
  * @param[in] iauth Active IAuth session.
  * @param[in] message Message to be parsed.
@@ -2471,6 +2640,12 @@ static void iauth_parse(struct IAuth *iauth, char *message)
 	     */
   case 'K': handler = iauth_cmd_kill; has_cli = 2; break;
   case 'r': /* we handle termination directly */ return;
+  /* SASL-related commands from IAuth */
+  case 'c': handler = iauth_cmd_sasl_challenge; has_cli = 2; break;
+  case 'L': handler = iauth_cmd_sasl_loggedin; has_cli = 2; break;
+  case 'f': handler = iauth_cmd_sasl_fail; has_cli = 2; break;
+  case 'l': handler = iauth_cmd_sasl_mechs; has_cli = 2; break;
+  case 'Z': handler = iauth_cmd_sasl_done; has_cli = 2; break;
   default:  sendto_iauth(NULL, "E Garbage :[%s]", message); return;
   }
 

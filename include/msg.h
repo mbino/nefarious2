@@ -496,6 +496,10 @@ struct Client;
 #define TOK_TEMPSHUN	"TS"
 #define CMD_TEMPSHUN	MSG_TEMPSHUN, TOK_TEMPSHUN
 
+#define MSG_BOUNCER_TRANSFER	"BOUNCER_TRANSFER"
+#define TOK_BOUNCER_TRANSFER	"BX"
+#define CMD_BOUNCER_TRANSFER	MSG_BOUNCER_TRANSFER, TOK_BOUNCER_TRANSFER
+
 /*
  * Constants
  */
@@ -534,6 +538,7 @@ struct Message {
    * UNREGISTERED, CLIENT, SERVER, OPER, SERVICE, LAST
    */
   MessageHandler handlers[LAST_HANDLER_TYPE];
+  char *help;
 };
 
 extern struct Message msgtab[];

@@ -182,6 +182,22 @@ int m_webirc(struct Client* cptr, struct Client* sptr, int parc, char* parv[])
     }
   }
 
+  /* Check supplied IP address is valid */
+  if (!ipmask_parse(ipaddr, &addr, NULL)) {
+    sendto_opmask_butone_global(&me, SNO_WEBIRC,
+                                "WEBIRC Attempt with invalid IP address from %s [%s]",
+                                cli_sockhost(sptr), cli_sock_ip(sptr));
+    return exit_client(cptr, sptr, &me, "WEBIRC Invalid IP address");
+  }
+
+  /* Check supplied host name is valid */
+  if (!valid_hostname(hostname)) {
+    sendto_opmask_butone_global(&me, SNO_WEBIRC,
+                                "WEBIRC Attempt with invalid host name from %s [%s]",
+                                cli_sockhost(sptr), cli_sock_ip(sptr));
+    return exit_client(cptr, sptr, &me, "WEBIRC Invalid host name");
+  }
+
   /* Send connection notice to inform opers of the change of IP and host. */
   if (feature_bool(FEAT_CONNEXIT_NOTICES))
     sendto_opmask_butone_global(&me, SNO_WEBIRC,
@@ -191,7 +207,7 @@ int m_webirc(struct Client* cptr, struct Client* sptr, int parc, char* parv[])
   /* Copy old details to cli_connectip and cli_connecthost. */
   if (!IsIPSpoofed(sptr)) {
     memcpy(&cli_connectip(sptr), &cli_ip(sptr), sizeof(cli_ip(sptr)));
-    ircd_strncpy(cli_connecthost(sptr), cli_sockhost(sptr), HOSTLEN);
+    ircd_strncpy(cli_connecthost(sptr), cli_sockhost(sptr), HOSTLEN + 1);
     if (cli_auth(sptr))
       auth_set_originalip(cli_auth(sptr), cli_ip(sptr));
     SetIPSpoofed(sptr);
@@ -204,20 +220,19 @@ int m_webirc(struct Client* cptr, struct Client* sptr, int parc, char* parv[])
   }
 
   /* Update the IP and charge them as a remote connect. */
-  ircd_aton(&addr, ipaddr);
   memcpy(&cli_ip(sptr), &addr, sizeof(cli_ip(sptr)));
   if (!find_except_conf(sptr, EFLAG_IPCHECK))
     IPcheck_remote_connect(sptr, 0);
 
   /* Change cli_sock_ip() and cli_sockhost() to spoofed host and IP. */
-  ircd_strncpy(cli_sock_ip(sptr), ircd_ntoa(&cli_ip(sptr)), SOCKIPLEN);
-  ircd_strncpy(cli_sockhost(sptr), hostname, HOSTLEN);
+  ircd_strncpy(cli_sock_ip(sptr), ircd_ntoa(&cli_ip(sptr)), SOCKIPLEN + 1);
+  ircd_strncpy(cli_sockhost(sptr), hostname, HOSTLEN + 1);
 
   /* Update host names if already set. */
   if (cli_user(sptr)) {
     if (!IsHiddenHost(sptr))
-      ircd_strncpy(cli_user(sptr)->host, hostname, HOSTLEN);
-    ircd_strncpy(cli_user(sptr)->realhost, hostname, HOSTLEN);
+      ircd_strncpy(cli_user(sptr)->host, hostname, HOSTLEN + 1);
+    ircd_strncpy(cli_user(sptr)->realhost, hostname, HOSTLEN + 1);
   }
 
   /* Set client's GeoIP data */
@@ -260,7 +275,7 @@ int m_webirc(struct Client* cptr, struct Client* sptr, int parc, char* parv[])
         else if (!ircd_strcmp(opt, "afternet.org/account")) {
           if (FlagHas(&wline->flags, WFLAG_TRUSTACCOUNT)) {
             SetAccount(sptr);
-            ircd_strncpy(cli_user(sptr)->account, optval, ACCOUNTLEN);
+            ircd_strncpy(cli_user(sptr)->account, optval, ACCOUNTLEN + 1);
 
             if ((feature_int(FEAT_HOST_HIDING_STYLE) == 1) ||
                 (feature_int(FEAT_HOST_HIDING_STYLE) == 3)) {
@@ -278,12 +293,12 @@ int m_webirc(struct Client* cptr, struct Client* sptr, int parc, char* parv[])
   }
 
   if (!EmptyString(wline->description)) {
-    ircd_strncpy(cli_webirc(cptr), wline->description, BUFSIZE);
+    ircd_strncpy(cli_webirc(cptr), wline->description, BUFSIZE + 1);
   }
 
   /* Set users ident to WebIRC block specified ident. */
   if (!EmptyString(wline->ident)) {
-    ircd_strncpy(cli_username(cptr), wline->ident, USERLEN);
+    ircd_strncpy(cli_username(cptr), wline->ident, USERLEN + 1);
     SetGotId(cptr);
   }
 

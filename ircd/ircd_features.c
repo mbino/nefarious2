@@ -170,14 +170,14 @@ feature_log_reset(struct Client* from, const char* const* fields, int count)
 static void
 feature_notify_servername(void)
 {
-  ircd_strncpy(cli_name(&his), feature_str(FEAT_HIS_SERVERNAME), HOSTLEN);
+  ircd_strncpy(cli_name(&his), feature_str(FEAT_HIS_SERVERNAME), HOSTLEN + 1);
 }
 
 /** Handle an update to FEAT_HIS_SERVERINFO. */
 static void
 feature_notify_serverinfo(void)
 {
-  ircd_strncpy(cli_info(&his), feature_str(FEAT_HIS_SERVERINFO), REALLEN);
+  ircd_strncpy(cli_info(&his), feature_str(FEAT_HIS_SERVERINFO), REALLEN + 1);
 }
 
 /** Report the value of a log setting.
@@ -276,11 +276,13 @@ feature_notify_excepts(void)
 
   add_isupport_s("CHANMODES", cmodebuf);
 
-  strcat(imaxlist, "b:");
-  strcat(imaxlist, itoa(feature_int(FEAT_MAXBANS)));
+  /* Use ircd_snprintf for safer string formatting */
   if (feature_bool(FEAT_EXCEPTS)) {
-    strcat(imaxlist, ",e:");
-    strcat(imaxlist, itoa(feature_int(FEAT_MAXEXCEPTS)));
+    ircd_snprintf(0, imaxlist, sizeof(imaxlist), "b:%d,e:%d",
+                  feature_int(FEAT_MAXBANS), feature_int(FEAT_MAXEXCEPTS));
+  } else {
+    ircd_snprintf(0, imaxlist, sizeof(imaxlist), "b:%d",
+                  feature_int(FEAT_MAXBANS));
   }
 
   add_isupport_s("MAXLIST", imaxlist);
@@ -294,11 +296,13 @@ set_isupport_maxexcepts(void)
 
     add_isupport_i("MAXBANS", feature_int(FEAT_MAXBANS));
 
-    strcat(imaxlist, "b:");
-    strcat(imaxlist, itoa(feature_int(FEAT_MAXBANS)));
+    /* Use ircd_snprintf for safer string formatting */
     if (feature_bool(FEAT_EXCEPTS)) {
-      strcat(imaxlist, ",e:");
-      strcat(imaxlist, itoa(feature_int(FEAT_MAXEXCEPTS)));
+      ircd_snprintf(0, imaxlist, sizeof(imaxlist), "b:%d,e:%d",
+                    feature_int(FEAT_MAXBANS), feature_int(FEAT_MAXEXCEPTS));
+    } else {
+      ircd_snprintf(0, imaxlist, sizeof(imaxlist), "b:%d",
+                    feature_int(FEAT_MAXBANS));
     }
 
     add_isupport_s("MAXLIST", imaxlist);
@@ -514,7 +518,7 @@ static struct FeatureDesc {
   F_N(LOG, FEAT_MYOPER, feature_log_set, feature_log_reset, feature_log_get,
       0, log_feature_unmark, log_feature_mark, log_feature_report),
   F_S(DOMAINNAME, 0, DOMAINNAME, 0),
-  F_B(RELIABLE_CLOCK, 0, 0, 0),
+  F_B(RELIABLE_CLOCK, 0, 1, 0),
   F_I(BUFFERPOOL, 0, 27000000, 0),
   F_B(HAS_FERGUSON_FLUSHER, 0, 0, 0),
   F_I(CLIENT_FLOOD, 0, 1024, 0),
@@ -698,6 +702,7 @@ static struct FeatureDesc {
   F_B(CHANNEL_CREATE_IRCOPONLY, 0, 0, 0 ),
   F_B(JOIN_ON_REMOVEDELAY, 0, 1, 0 ),
   F_B(DERESTRICT_HIDECHANS, 0, 1, 0 ),
+  F_B(VALID_UTF8_CHANNELS_ONLY, 0, 1, 0 ),
 
   /* Extended channel modes */
   F_B(CHMODE_a, 0, 1, 0),

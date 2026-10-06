@@ -55,10 +55,12 @@
 #include "ircd_crypt_native.h"
 #include "ircd_crypt_plain.h"
 #include "ircd_crypt_smd5.h"
+#include "ircd_crypt_bcrypt.h"
 
 /* #include <assert.h> -- Now using assert in ircd_log.h */
 #include <unistd.h>
 #include <string.h>
+#include <openssl/crypto.h>
 
 /* evil global */
 crypt_mechs_t* crypt_mechs_root;
@@ -186,9 +188,9 @@ crypt_mechs_t* crypt_mech;
    }
    memset(hashed_pass, 0, sizeof(char)*strlen(temp_hashed_pass)
     +crypt_mech->mech->crypt_token_size + 1);
-   ircd_strncpy(hashed_pass, crypt_mech->mech->crypt_token, 
-    crypt_mech->mech->crypt_token_size);
-   ircd_strncpy(hashed_pass + crypt_mech->mech->crypt_token_size, temp_hashed_pass, strlen(temp_hashed_pass));
+   ircd_strncpy(hashed_pass, crypt_mech->mech->crypt_token,
+    crypt_mech->mech->crypt_token_size + 1);
+   ircd_strncpy(hashed_pass + crypt_mech->mech->crypt_token_size, temp_hashed_pass, strlen(temp_hashed_pass) + 1);
    Debug((DEBUG_DEBUG, "ircd_crypt: tagged pass is %s", hashed_pass));
   } else {
    Debug((DEBUG_DEBUG, "ircd_crypt: will try next mechanism at 0x%X", 
@@ -197,6 +199,21 @@ crypt_mechs_t* crypt_mech;
    continue;
   }
   return hashed_pass;
+ }
+
+ /* try bcrypt ($2a$, $2b$, $2x$, $2y$) - pass directly to system crypt */
+ if (strlen(salt) > 4 && salt[0] == '$' && salt[1] == '2' &&
+     (salt[2] == 'a' || salt[2] == 'b' || salt[2] == 'x' || salt[2] == 'y') && salt[3] == '$')
+ {
+   char *s;
+   Debug((DEBUG_DEBUG, "ircd_crypt: detected bcrypt hash"));
+   if (NULL == (temp_hashed_pass = (char*)ircd_crypt_native(key, salt)))
+     return NULL;
+   if (!ircd_strcmp(temp_hashed_pass, salt))
+   {
+     DupString(s, temp_hashed_pass);
+     return s;
+   }
  }
 
  /* try to use native crypt for an old-style (untagged) password */
@@ -242,6 +259,7 @@ void ircd_crypt_init(void)
  ircd_register_crypt_smd5();
  ircd_register_crypt_plain();
  ircd_register_crypt_native();
+ ircd_register_crypt_bcrypt();
 
 return;
 }
@@ -250,6 +268,7 @@ int oper_password_match(const char* to_match, const char* passwd)
 {
   char *crypted;
   int res;
+  size_t crypted_len, passwd_len, cmp_len;
   /*
    * use first two chars of the password they send in as salt
    *
@@ -265,7 +284,16 @@ int oper_password_match(const char* to_match, const char* passwd)
 
   if (!crypted)
    return 0;
-  res = strcmp(crypted, passwd);
+
+  /* Use constant-time comparison to prevent timing attacks.
+   * Always perform comparison to avoid leaking length info. */
+  crypted_len = strlen(crypted);
+  passwd_len = strlen(passwd);
+  cmp_len = (crypted_len < passwd_len) ? crypted_len : passwd_len;
+  res = CRYPTO_memcmp(crypted, passwd, cmp_len);
+  /* Lengths must also match - XOR is non-zero if different */
+  res |= (crypted_len ^ passwd_len);
+
   MyFree(crypted);
   return 0 == res;
 }

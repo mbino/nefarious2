@@ -471,7 +471,7 @@ static void parse_command_line(int argc, char** argv) {
   int opt;
 
   if (thisServer.euid != thisServer.uid)
-    setuid(thisServer.uid);
+    (void)!setuid(thisServer.uid);
 
   /* Do we really need to sanity check the non-NULLness of optarg?  That's
    * getopt()'s job...  Removing those... -zs
@@ -484,7 +484,7 @@ static void parse_command_line(int argc, char** argv) {
     case 't':  thisServer.bootopt |= BOOT_TTY;         break;
     case 'd':  dpath      = optarg;                    break;
     case 'f':  configfile = optarg;                    break;
-    case 'h':  ircd_strncpy(cli_name(&me), optarg, HOSTLEN); break;
+    case 'h':  ircd_strncpy(cli_name(&me), optarg, HOSTLEN + 1); break;
     case 'v':
       printf("ircd %s+[%s]\n", version, cvs_version);
       printf("Event engines: ");

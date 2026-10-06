@@ -57,6 +57,127 @@ int string_has_wildcards(const char* str)
   return 0;
 }
 
+/**
+ * Check if a given string is a valid UTF-8 encoded string.
+ *
+ * @param str The string to check.
+ * @return 1 if the string is valid UTF-8, 0 otherwise.
+ */
+int string_is_valid_utf8(const char * str)
+{
+    assert(str != NULL);
+
+
+    const unsigned char * bytes = (const unsigned char *)str;
+    while(*bytes)
+    {
+        if( (// ASCII
+             // use bytes[0] <= 0x7F to allow ASCII control characters
+                bytes[0] == 0x09 ||
+                bytes[0] == 0x0A ||
+                bytes[0] == 0x0D ||
+                (0x20 <= bytes[0] && bytes[0] <= 0x7E)
+            )
+        ) {
+            bytes += 1;
+            continue;
+        }
+
+        if( (// non-overlong 2-byte
+                (0xC2 <= bytes[0] && bytes[0] <= 0xDF) &&
+                (0x80 <= bytes[1] && bytes[1] <= 0xBF)
+            )
+        ) {
+            bytes += 2;
+            continue;
+        }
+
+        if( (// excluding overlongs
+                bytes[0] == 0xE0 &&
+                (0xA0 <= bytes[1] && bytes[1] <= 0xBF) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF)
+            ) ||
+            (// straight 3-byte
+                ((0xE1 <= bytes[0] && bytes[0] <= 0xEC) ||
+                    bytes[0] == 0xEE ||
+                    bytes[0] == 0xEF) &&
+                (0x80 <= bytes[1] && bytes[1] <= 0xBF) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF)
+            ) ||
+            (// excluding surrogates
+                bytes[0] == 0xED &&
+                (0x80 <= bytes[1] && bytes[1] <= 0x9F) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF)
+            )
+        ) {
+            bytes += 3;
+            continue;
+        }
+
+        if( (// planes 1-3
+                bytes[0] == 0xF0 &&
+                (0x90 <= bytes[1] && bytes[1] <= 0xBF) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF) &&
+                (0x80 <= bytes[3] && bytes[3] <= 0xBF)
+            ) ||
+            (// planes 4-15
+                (0xF1 <= bytes[0] && bytes[0] <= 0xF3) &&
+                (0x80 <= bytes[1] && bytes[1] <= 0xBF) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF) &&
+                (0x80 <= bytes[3] && bytes[3] <= 0xBF)
+            ) ||
+            (// plane 16
+                bytes[0] == 0xF4 &&
+                (0x80 <= bytes[1] && bytes[1] <= 0x8F) &&
+                (0x80 <= bytes[2] && bytes[2] <= 0xBF) &&
+           		(0x80 <= bytes[3] && bytes[3] <= 0xBF)
+            )
+        ) {
+            bytes += 4;
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
+}  
+
+/** Check whether \a str contains non-ASCII characters.
+ * @param[in] str String that might contain such characters.
+ * @return Non-zero if \a str contains characters with code points > 127,
+ * zero if there are none.
+ */
+int string_contains_non_ascii(const char* str)
+{
+    assert(str != NULL);
+
+    for ( ; *str; ++str) {
+        if ((unsigned char)*str > 127) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/** Check whether \a str contains either only ASCII characters or properly
+ * encoded UTF-8 characters.
+ * @param[in] str String that might contain such characters.
+ * @return Non-zero if \a str contains non-printable characters,
+ * zero if there are none.
+ */
+int string_character_structure_is_sane(const char* str)
+{
+	assert(str!= NULL);
+
+    if (string_is_valid_utf8(str) || !string_contains_non_ascii(str)) {
+		return 1;
+	}
+
+	return 0;
+}
+
 /** Split a string on certain delimiters.
  * This is a reentrant version of normal strtok().  The first call for
  * a particular input string must use a non-NULL \a str; *save will be
@@ -140,27 +261,33 @@ char* canonize(char* buffer)
   return cbuf;
 }
 
-/** Copy one string to another, not to exceed a certain length.
- * @param[in] s1 Output buffer.
+/** Copy one string to another with guaranteed null-termination.
+ * Operates like BSD strlcpy - always null-terminates if size > 0.
+ * @param[out] s1 Output buffer.
  * @param[in] s2 Source buffer.
- * @param[in] n Maximum number of bytes to write, plus one.
+ * @param[in] n Full size of destination buffer (not size-1).
  * @return The original input buffer \a s1.
+ *
+ * Note: Unlike the original implementation, this takes the FULL buffer
+ * size and always null-terminates safely. Callers that previously passed
+ * (size-1) should now pass (size) or use sizeof(buffer).
  */
 char* ircd_strncpy(char* s1, const char* s2, size_t n)
 {
-  char* endp = s1 + n;
-  char* s = s1;
+  char* dst = s1;
 
   assert(0 != s1);
   assert(0 != s2);
 
-  while (s < endp && (*s++ = *s2++))
-    ;
-  if (s == endp)
-    *s = '\0';
+  if (n != 0) {
+    while (--n != 0) {
+      if ((*dst++ = *s2++) == '\0')
+        return s1;
+    }
+    *dst = '\0';
+  }
   return s1;
 }
-
 
 #ifndef FORCEINLINE
 NTL_HDR_strChattr { NTL_SRC_strChattr }
@@ -307,9 +434,9 @@ int token_vector(char* names, char token, char** vector, int size)
 /** Copy all or part of the hostname in a string to another string.
  * If \a userhost contains an '\@', the remaining portion is used;
  * otherwise, the whole \a userhost is used.
- * @param[out] buf Output buffer.
+ * @param[out] buf Output buffer (must be at least len+1 bytes).
  * @param[in] userhost user\@hostname or hostname string.
- * @param[in] len Maximum number of bytes to write to \a host.
+ * @param[in] len Maximum content length (not including null terminator).
  * @return The output buffer \a buf.
  */
 char* host_from_uh(char* buf, const char* userhost, size_t len)
@@ -323,8 +450,7 @@ char* host_from_uh(char* buf, const char* userhost, size_t len)
     ++s;
   else
     s = userhost;
-  ircd_strncpy(buf, s, len);
-  buf[len] = '\0';
+  ircd_strncpy(buf, s, len + 1);
   return buf;
 }
 
@@ -791,3 +917,88 @@ int check_if_ipmask(const char *mask)
   return has_digit;
 }
 
+/* Check if a username is valid */
+int valid_username(const char* name) {
+  const char *c = NULL;
+
+  for (c = name; *c; c++) {
+    if (!IsUserChar(*c))
+      return 0;
+  }
+
+  return 1;
+}
+
+/* Check if a hostname is valid */
+int valid_hostname(const char* name) {
+  const char *c = NULL;
+
+  /* Empty strings are not valid hosts */
+  if (EmptyString(name))
+    return 0;
+  /* Don't allow leading period */
+  if (*name == '.')
+    return 0;
+  /* Don't allow trailing period */
+  if (name[strlen(name)-1] == '.')
+    return 0;
+
+  for (c = name; *c; c++) {
+    if (!IsHostChar(*c))
+      return 0;
+  }
+
+  return 1;
+}
+
+/* Check if a spoof host is valid.  A spoof host is a host name, optionally
+ * prefixed with a user name and '@'.  Wildcards are only allowed if mask is
+ * non-zero (Spoofhost blocks using ismask).  Anything else is rejected so
+ * that the spoof host cannot be mistaken for something other than a single
+ * parameter when it is sent to other servers, most notably a spoof host
+ * beginning with a ':'.
+ */
+int valid_spoofhost(const char* host, int mask) {
+  const char *c = NULL;
+  const char *at = NULL;
+
+  /* Empty strings are not valid spoof hosts */
+  if (EmptyString(host))
+    return 0;
+
+  if ((at = strchr(host, '@')) != NULL) {
+    /* Don't allow an empty user name */
+    if (at == host)
+      return 0;
+    /* The user part is copied into cli_user()->sethost[HOSTLEN+USERLEN+2]
+     * downstream with strlcpy semantics; bound it here rather than let
+     * it truncate silently (PR #109 follow-up). */
+    if ((size_t)(at - host) > USERLEN)
+      return 0;
+    for (c = host; c < at; c++) {
+      if (!IsUserChar(*c) && !(mask && ((*c == '*') || (*c == '?'))))
+        return 0;
+    }
+    c = at + 1;
+  } else
+    c = host;
+
+  /* Empty strings are not valid hosts */
+  if (EmptyString(c))
+    return 0;
+  if (strlen(c) > HOSTLEN)
+    return 0;
+  /* Don't allow leading period */
+  if (*c == '.')
+    return 0;
+  /* Don't allow trailing period */
+  if (c[strlen(c)-1] == '.')
+    return 0;
+
+  for ( ; *c; c++) {
+    if (!IsHostChar(*c) && !(mask && ((*c == '*') || (*c == '?'))))
+      return 0;
+  }
+
+  return 1;
+}

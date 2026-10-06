@@ -359,7 +359,7 @@ int register_user(struct Client *cptr, struct Client *sptr)
   char*            parv[4];
   char*            tmpstr;
   char*            join[3];
-  char             chan[CHANNELLEN-1];
+  char             chan[CHANNELLEN + 1];
   struct ConnectionClass* connclass = NULL;
   struct ConfItem* cliconf = NULL;
   struct User*     user = cli_user(sptr);
@@ -450,7 +450,7 @@ int register_user(struct Client *cptr, struct Client *sptr)
     send_supported(sptr);
 
 #ifdef USE_SSL
-    if (IsSSL(sptr))
+    if (cli_socket(sptr).ssl)
     {
       sendcmdto_one(&me, CMD_NOTICE, sptr, "%C :You are connected to %s with %s", sptr,
                     cli_name(&me), ssl_get_cipher(cli_socket(sptr).ssl));
@@ -632,7 +632,7 @@ int register_user(struct Client *cptr, struct Client *sptr)
         if (!EmptyString(connclass->autojoinnotice))
           sendcmdto_one(&me, CMD_NOTICE, sptr, "%C :%s", sptr, connclass->autojoinnotice);
 
-        ircd_strncpy(chan, connclass->autojoinchan, CHANNELLEN-1);
+        ircd_strncpy(chan, connclass->autojoinchan, CHANNELLEN + 1);
         join[0] = cli_name(sptr);
         join[1] = chan;
         join[2] = NULL;
@@ -647,7 +647,7 @@ int register_user(struct Client *cptr, struct Client *sptr)
         if (!EmptyString(cliconf->autojoinnotice))
           sendcmdto_one(&me, CMD_NOTICE, sptr, "%C :%s", sptr, cliconf->autojoinnotice);
 
-        ircd_strncpy(chan, cliconf->autojoinchan, CHANNELLEN-1);
+        ircd_strncpy(chan, cliconf->autojoinchan, CHANNELLEN + 1);
         join[0] = cli_name(sptr);
         join[1] = chan;
         join[2] = NULL;
@@ -702,7 +702,14 @@ static const struct UserMode {
   { FLAG_SETHOST,      'h' },
   { FLAG_FAKEHOST,     'f' },
   { FLAG_CLOAKHOST,    'C' },
-  { FLAG_CLOAKIP,      'c' }
+  { FLAG_CLOAKIP,      'c' },
+  /* Tracked and propagated here; their behaviour lives in the IRCv3
+   * branch (chathistory / multiline / bouncer).  Listed so a user on this
+   * server can set them and so they survive a hop through it. */
+  { FLAG_MULTILINE_EXPAND, 'M' },
+  { FLAG_NOSTORAGE,    'Y' },
+  { FLAG_PM_OPTOUT,    'y' },
+  { FLAG_BNC_HOLDPREF, 'b' }
 };
 
 /** Length of #userModeList. */
@@ -754,11 +761,11 @@ int set_nick_name(struct Client* cptr, struct Client* sptr,
     hAddClient(new_client);
 
     cli_serv(sptr)->ghost = 0;        /* :server NICK means end of net.burst */
-    ircd_strncpy(cli_username(new_client), parv[4], USERLEN);
-    ircd_strncpy(cli_user(new_client)->username, parv[4], USERLEN);
-    ircd_strncpy(cli_user(new_client)->host, parv[5], HOSTLEN);
-    ircd_strncpy(cli_user(new_client)->realhost, parv[5], HOSTLEN);
-    ircd_strncpy(cli_info(new_client), parv[parc - 1], REALLEN);
+    ircd_strncpy(cli_username(new_client), parv[4], USERLEN + 1);
+    ircd_strncpy(cli_user(new_client)->username, parv[4], USERLEN + 1);
+    ircd_strncpy(cli_user(new_client)->host, parv[5], HOSTLEN + 1);
+    ircd_strncpy(cli_user(new_client)->realhost, parv[5], HOSTLEN + 1);
+    ircd_strncpy(cli_info(new_client), parv[parc - 1], REALLEN + 1);
 
     Count_newremoteclient(UserStats, sptr);
 
@@ -1150,27 +1157,27 @@ hide_hostmask(struct Client *cptr)
   /* Select the new host to change to. */
   if (IsSetHost(cptr)) {
     if ((sethostat = strstr(cli_user(cptr)->sethost, "@")) != NULL) {
-      ircd_strncpy(newhost, sethostat+1, HOSTLEN);
-      ircd_strncpy(newuser, cli_user(cptr)->sethost, USERLEN);
+      ircd_strncpy(newhost, sethostat+1, HOSTLEN + 1);
+      ircd_strncpy(newuser, cli_user(cptr)->sethost, USERLEN + 1);
       if ((userat = strstr(newuser, "@")) != NULL)
         *userat = '\0';
     } else
-      ircd_strncpy(newhost, cli_user(cptr)->sethost, HOSTLEN);
+      ircd_strncpy(newhost, cli_user(cptr)->sethost, HOSTLEN + 1);
   } else if (IsFakeHost(cptr)) {
-    ircd_strncpy(newhost, cli_user(cptr)->fakehost, HOSTLEN);
+    ircd_strncpy(newhost, cli_user(cptr)->fakehost, HOSTLEN + 1);
   } else if ((feature_int(FEAT_HOST_HIDING_STYLE) == 1) ||
       ((feature_int(FEAT_HOST_HIDING_STYLE) == 3) && IsAccount(cptr))) {
     if (IsAnOper(cptr) && !IsHideOper(cptr) && feature_bool(FEAT_OPERHOST_HIDING))
-      ircd_snprintf(0, newhost, HOSTLEN, "%s.%s",
+      ircd_snprintf(0, newhost, HOSTLEN + 1, "%s.%s",
                     cli_user(cptr)->account, feature_str(FEAT_HIDDEN_OPERHOST));
     else
-      ircd_snprintf(0, newhost, HOSTLEN, "%s.%s",
+      ircd_snprintf(0, newhost, HOSTLEN + 1, "%s.%s",
                     cli_user(cptr)->account, feature_str(FEAT_HIDDEN_HOST));
   } else if (IsCloakHost(cptr) && ((feature_int(FEAT_HOST_HIDING_STYLE) == 2) ||
              (feature_int(FEAT_HOST_HIDING_STYLE) == 3))) {
-    ircd_strncpy(newhost, cli_user(cptr)->cloakhost, HOSTLEN);
+    ircd_strncpy(newhost, cli_user(cptr)->cloakhost, HOSTLEN + 1);
   } else {
-    ircd_strncpy(newhost, cli_user(cptr)->realhost, HOSTLEN);
+    ircd_strncpy(newhost, cli_user(cptr)->realhost, HOSTLEN + 1);
   }
 
   /* If the new host is the same as the current host return silently. */
@@ -1193,9 +1200,9 @@ hide_hostmask(struct Client *cptr)
                   feature_str(FEAT_HIDDEN_HOST_SET_MESSAGE));
 
   /* Finally copy the new host to the users current host. */
-  ircd_strncpy(cli_user(cptr)->host, newhost, HOSTLEN);
+  ircd_strncpy(cli_user(cptr)->host, newhost, HOSTLEN + 1);
   if (newuser[0] != '\0')
-    ircd_strncpy(cli_user(cptr)->username, newuser, USERLEN);
+    ircd_strncpy(cli_user(cptr)->username, newuser, USERLEN + 1);
 
   /* ok, the client is now fully hidden, so let them know -- hikari */
   if (MyConnect(cptr))
@@ -1278,7 +1285,7 @@ unhide_hostmask(struct Client *cptr)
   if (feature_bool(FEAT_HIDDEN_HOST_QUIT))
     sendcmdto_common_channels_butone(cptr, CMD_QUIT, cptr, ":%s",
                   feature_str(FEAT_HIDDEN_HOST_UNSET_MESSAGE));
-  ircd_strncpy(cli_user(cptr)->host, cli_user(cptr)->realhost, HOSTLEN);
+  ircd_strncpy(cli_user(cptr)->host, cli_user(cptr)->realhost, HOSTLEN + 1);
 
   /* ok, the client is now fully unhidden, so let them know -- hikari */
   if (MyConnect(cptr))
@@ -1753,10 +1760,12 @@ int set_user_mode(struct Client *cptr, struct Client *sptr, int parc,
    * will cause servers to update correctly.
    */
   if (!FlagHas(&setflags, FLAG_ACCOUNT) && IsAccount(acptr)) {
-      int len = ACCOUNTLEN;
+      int len = ACCOUNTLEN + 1;
       char *ts;
       if ((ts = strchr(account, ':'))) {
-	len = (ts++) - account;
+	len = (ts++) - account + 1; /* +1: ircd_strncpy copies len-1 chars */
+	if (len > ACCOUNTLEN + 1)
+	  len = ACCOUNTLEN + 1;
 	cli_user(acptr)->acc_create = atoi(ts);
 	Debug((DEBUG_DEBUG, "Received timestamped account in user mode; "
 	      "account \"%s\", timestamp %Tu", account,
@@ -1766,18 +1775,18 @@ int set_user_mode(struct Client *cptr, struct Client *sptr, int parc,
   }
 
   if (!FlagHas(&setflags, FLAG_CLOAKIP) && IsCloakIP(acptr))
-    ircd_strncpy(cli_user(acptr)->cloakip, cloakip, HOSTLEN);
+    ircd_strncpy(cli_user(acptr)->cloakip, cloakip, HOSTLEN + 1);
   if (!FlagHas(&setflags, FLAG_CLOAKHOST) && IsCloakHost(acptr))
-    ircd_strncpy(cli_user(acptr)->cloakhost, cloakhost, HOSTLEN);
+    ircd_strncpy(cli_user(acptr)->cloakhost, cloakhost, HOSTLEN + 1);
   if (!FlagHas(&setflags, FLAG_FAKEHOST) && IsFakeHost(acptr))
-    ircd_strncpy(cli_user(acptr)->fakehost, fakehost, HOSTLEN);
+    ircd_strncpy(cli_user(acptr)->fakehost, fakehost, HOSTLEN + 1);
   if (IsSetHost(acptr) && (sethost != NULL)) {
     if (!FlagHas(&setflags, FLAG_SETHOST) ||
         (FlagHas(&setflags, FLAG_SETHOST) &&
          ircd_strncmp(cli_user(acptr)->sethost, sethost, HOSTLEN))) {
       /* Make sure we forward the sethost if its changed */
       FlagClr(&setflags, FLAG_SETHOST);
-      ircd_strncpy(cli_user(acptr)->sethost, sethost, HOSTLEN);
+      ircd_strncpy(cli_user(acptr)->sethost, sethost, HOSTLEN + 1);
       if (IsHiddenHost(acptr))
         do_host_hiding = 1;
     }
@@ -2292,7 +2301,7 @@ static struct SLink *isupport_lines; /**< List of formatted ISUPPORT lines. */
 
 /** Mark #isupport_lines as dirty and needing a rebuild. */
 static void
-touch_isupport()
+touch_isupport(void)
 {
   while (isupport_lines) {
     struct SLink *link = isupport_lines;
@@ -2389,7 +2398,7 @@ void del_isupport(const char *name)
 
 /** Populate #isupport_lines from #isupport. */
 static void
-build_isupport_lines()
+build_isupport_lines(void)
 {
   struct ISupport *is;
   struct SLink **plink;
@@ -2468,7 +2477,7 @@ void init_isupport(void)
     strcat(imaxlist, itoa(feature_int(FEAT_MAXEXCEPTS)));
   }
 
-  ircd_snprintf(0, cmodebuf, BUFSIZE, "b%s,%sk%s,Ll,aCcDdiMmNnOpQRrSsTtZz",
+  ircd_snprintf(0, cmodebuf, BUFSIZE, "b%s,%sk%s,Ll,aCcDdHiMmNnOPpQRrSsTtZz",
                 feature_bool(FEAT_EXCEPTS) ? "e" : "",
                 feature_bool(FEAT_OPLEVELS) ? "A" : "",
                 feature_bool(FEAT_OPLEVELS) ? "U" : "");
@@ -2498,6 +2507,7 @@ void init_isupport(void)
   add_isupport_s("CHANTYPES", feature_bool(FEAT_LOCAL_CHANNELS) ? "#&" : "#");
   add_isupport_s("PREFIX", feature_bool(FEAT_HALFOPS) ? "(ohv)@%+" : "(ov)@+");
   add_isupport_s("STATUSMSG", feature_bool(FEAT_HALFOPS) ? "@%+" : "@+");
+  add_isupport_s("BOT", "B");
 
   add_isupport_s("CHANMODES", cmodebuf);
 

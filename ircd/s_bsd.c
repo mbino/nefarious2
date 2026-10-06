@@ -282,6 +282,32 @@ static IOResult client_sendv(struct Client *cptr, struct MsgQ *buf, unsigned int
   else
     return os_sendv_nonb(cli_fd(cptr), buf, count_in, count_out);
 }
+
+/** Set the event interest of a socket whose TLS handshake is still in
+ * progress to what OpenSSL needs next: readable always (the peer's next
+ * flight, an alert, or a close can arrive at any point), writable only
+ * while SSL_accept holds handshake bytes the kernel would not take.
+ *
+ * The write side is the one that matters.  Client listeners give their
+ * accepted sockets a CLIENT_TCP_WINDOW send buffer (2 KB, which the
+ * kernel doubles), and a server flight with a real certificate chain is
+ * larger than that, so SSL_accept regularly writes the first 4 KB, gets
+ * EAGAIN, and returns SSL_ERROR_WANT_WRITE.  Nothing else arms writable
+ * interest for it: the auth notices are queued behind the handshake, and
+ * once the idle-socket spin was fixed their interest is dropped whenever
+ * SSL_accept waits to read.  The handshake then sat until an unrelated
+ * event (a late DNS notice, or the peer poking the socket) or the connect
+ * timeout -- which the client saw as an EOF mid-handshake.
+ *
+ * Called after every SSL_accept that reports the handshake still pending.
+ * Anything queued meanwhile gets the writable interest back through
+ * update_write once the handshake completes. */
+static void ssl_handshake_events(struct Client *cptr)
+{
+  socket_events(&(cli_socket(cptr)),
+                SOCK_ACTION_SET | SOCK_EVENT_READABLE
+                | (ssl_want_write(cptr) ? SOCK_EVENT_WRITABLE : 0));
+}
 #endif /* USE_SSL */
 
 /** Attempt to send a sequence of bytes to the connection.
@@ -369,8 +395,22 @@ static int completed_connection(struct Client* cptr)
       sendto_opmask_butone(0, SNO_OLDSNO, "Connection failed to %s: Unable to select SSL ciphers",
                            cli_name(cptr));
       return 0;
-    } else if (r == 0)
+    } else if (r == 0) {
+      /* TCP is up and the TLS handshake waits on the peer.  Leave the
+       * connect-pending state: its interest is write-only, and an
+       * established socket is always writable, so the loop re-entered
+       * here on every iteration until the peer's flight arrived -- a peer
+       * that accepts and then stalls pinned a core until the connect
+       * timeout.  Wait instead on what OpenSSL asks for (the accept
+       * side's ssl_handshake_events); the read and write handlers bring
+       * the handshake back here while the flag is set. */
+      SetSSLNeedConnect(cptr);
+      if (s_state(&(cli_socket(cptr))) == SS_CONNECTING)
+        socket_state(&(cli_socket(cptr)), SS_CONNECTED);
+      ssl_handshake_events(cptr);
       return 1;
+    }
+    ClearSSLNeedConnect(cptr);
     sslfp = ssl_get_fingerprint(cli_socket(cptr).ssl);
     if (sslfp)
       ircd_strncpy(cli_sslclifp(cptr), sslfp, BUFSIZE+1);
@@ -611,6 +651,8 @@ void add_connection(struct Listener* listener, int fd) {
 /* Begin Zline */
   if (!feature_bool(FEAT_DISABLE_ZLINES) && (azline = zline_lookup(new_client, 0))) {
     ircd_snprintf(0, zreason, sizeof(zreason), "ERROR :Z-lined (%s)", azline->zl_reason);
+    if (IsIPChecked(new_client))
+      IPcheck_connect_fail(new_client, 1);
 #ifdef USE_SSL
     ssl_murder(ssl, fd, zreason);
 #else
@@ -625,6 +667,8 @@ void add_connection(struct Listener* listener, int fd) {
 /* Begin Gline */
   if (!feature_bool(FEAT_DISABLE_GLINES) && (agline = gline_lookup(new_client, 0))) {
     ircd_snprintf(0, greason, sizeof(greason), "ERROR :G-lined (%s)", agline->gl_reason);
+    if (IsIPChecked(new_client))
+      IPcheck_connect_fail(new_client, 1);
 #ifdef USE_SSL
     ssl_murder(ssl, fd, greason);
 #else
@@ -637,8 +681,12 @@ void add_connection(struct Listener* listener, int fd) {
 /* End Gline */
 
   cli_fd(new_client) = fd;
+  /* Readable from the start: nothing is delivered before this function
+   * returns, and the TLS handshake below is driven by read events (plus
+   * write interest while OpenSSL asks for it -- ssl_handshake_events). */
   if (!socket_add(&(cli_socket(new_client)), client_sock_callback,
-		  (void*) cli_connect(new_client), SS_CONNECTED, 0, fd)) {
+		  (void*) cli_connect(new_client), SS_CONNECTED,
+		  SOCK_EVENT_READABLE, fd)) {
     ++ServerStats->is_ref;
 #ifdef USE_SSL
     ssl_murder(ssl, fd, register_message);
@@ -661,6 +709,10 @@ void add_connection(struct Listener* listener, int fd) {
       cli_fd(new_client) = -1;
       return;
     }
+    /* The ClientHello may already have been waiting, in which case the
+     * server flight just went out -- possibly only part of it. */
+    if (IsSSLNeedAccept(new_client))
+      ssl_handshake_events(new_client);
   }
 #endif
 
@@ -882,8 +934,8 @@ int connect_server(struct ConfItem* aconf, struct Client* by)
   /*
    * Copy these in so we have something for error detection.
    */
-  ircd_strncpy(cli_name(cptr), aconf->name, HOSTLEN);
-  ircd_strncpy(cli_sockhost(cptr), aconf->host, HOSTLEN);
+  ircd_strncpy(cli_name(cptr), aconf->name, HOSTLEN + 1);
+  ircd_strncpy(cli_sockhost(cptr), aconf->host, HOSTLEN + 1);
 
   /*
    * Attach config entries to client here rather than in
@@ -963,7 +1015,7 @@ void init_server_identity(void)
   const struct LocalConf* conf = conf_get_local();
   assert(0 != conf);
 
-  ircd_strncpy(cli_name(&me), conf->name, HOSTLEN);
+  ircd_strncpy(cli_name(&me), conf->name, HOSTLEN + 1);
   SetYXXServerName(&me, conf->numeric);
 }
 
@@ -1045,6 +1097,10 @@ static void client_sock_callback(struct Event* ev)
     if (IsSSLNeedAccept(cptr)) {
       int r = ssl_accept(cptr);
       if (r == 1) {
+        /* Still in progress: wait for what OpenSSL needs.  This drops
+         * the writable interest an auth notice may have armed, so an
+         * idle socket (no ClientHello yet) does not spin the loop. */
+        ssl_handshake_events(cptr);
         break;
       } else if (r == 0) {
         SetFlag(cptr, FLAG_DEADSOCKET);
@@ -1054,8 +1110,13 @@ static void client_sock_callback(struct Event* ev)
         break;
       }
     }
-    if (s_state(&(con_socket(con))) == SS_CONNECTING) {
-      completed_connection(cptr);
+    if (s_state(&(con_socket(con))) == SS_CONNECTING || IsSSLNeedConnect(cptr)) {
+      if (!completed_connection(cptr)) {
+        fallback = cli_info(cptr);
+        break;
+      }
+      if (IsSSLNeedConnect(cptr))
+        break;   /* still handshaking: nothing to write yet */
     }
 #endif
     ClrFlag(cptr, FLAG_BLOCKED);
@@ -1071,6 +1132,10 @@ static void client_sock_callback(struct Event* ev)
       if (IsSSLNeedAccept(cptr)) {
         int r = ssl_accept(cptr);
         if (r == 1) {
+          /* Usually the ClientHello was just consumed and the server
+           * flight written; when only part of it fit the socket buffer
+           * this arms the writable interest that finishes it. */
+          ssl_handshake_events(cptr);
           break;
         } else if (r == 0) {
           SetFlag(cptr, FLAG_DEADSOCKET);
@@ -1079,9 +1144,18 @@ static void client_sock_callback(struct Event* ev)
           ssl_abort(cptr);
           break;
         }
+        /* Handshake done: whatever was queued meanwhile (the auth
+         * notices) needs the writable interest the handshake did not. */
+        update_write(cptr);
       }
-      if (s_state(&(con_socket(con))) == SS_CONNECTING)
-        completed_connection(cptr);
+      if (s_state(&(con_socket(con))) == SS_CONNECTING || IsSSLNeedConnect(cptr)) {
+        if (!completed_connection(cptr)) {
+          fallback = cli_info(cptr);
+          break;
+        }
+        if (IsSSLNeedConnect(cptr))
+          break;   /* still handshaking: nothing to read as data yet */
+      }
 #endif
       Debug((DEBUG_DEBUG, "Reading data from %C", cptr));
       if (read_packet(cptr, 1) == 0) /* error while reading packet */

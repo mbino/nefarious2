@@ -109,7 +109,7 @@ set_ban_mask(struct Ban *ban, const char *banstr)
       sep = strrchr(b, '@');
   } else
     sep = strrchr(b, '@');
-  ircd_strncpy(ban->banstr, banstr, sizeof(ban->banstr) - 1);
+  ircd_strncpy(ban->banstr, banstr, sizeof(ban->banstr));
   if (sep) {
     ban->nu_len = sep - b;
     if (ban->flags & BAN_EXTENDED)
@@ -286,6 +286,16 @@ int sub1_from_channel(struct Channel* chptr)
   chptr->mode.mode &= ~MODE_INVITEONLY;
   chptr->mode.limit = 0;
   /*
+   * +L goes with +l: the redirect fires on users >= limit (m_join.c),
+   * so with the limit cleared to 0 on an empty channel a surviving +L
+   * turned from an overflow redirect into an UNCONDITIONAL one and sent
+   * every joiner -- the founder included -- away from their own empty
+   * channel, the exact lockout this reset exists to prevent.  A
+   * redirect meant to outlive an empty channel belongs on a +z channel,
+   * which returned above (PR #108 follow-up, 2026-09-07).
+   */
+  *chptr->mode.redir = '\0';
+  /*
    * We do NOT reset a possible key or bans because when
    * the 'channel owners' can't get in because of a key
    * or ban then apparently there was a fight/takeover
@@ -424,7 +434,7 @@ struct Ban *find_ban(struct Client *cptr, struct Ban *banlist, int extbantype, i
   if (IsAccount(cptr) && ((feature_int(FEAT_HOST_HIDING_STYLE) == 1) ||
       (feature_int(FEAT_HOST_HIDING_STYLE) == 3)))
   {
-    ircd_snprintf(0, tmphost, HOSTLEN, "%s.%s",
+    ircd_snprintf(0, tmphost, HOSTLEN + 1, "%s.%s",
                   cli_user(cptr)->account, (feature_bool(FEAT_OPERHOST_HIDING) &&
                   IsAnOper(cptr) ? feature_str(FEAT_HIDDEN_OPERHOST) :
                   feature_str(FEAT_HIDDEN_HOST)));
@@ -1037,6 +1047,30 @@ const char* find_no_nickchange_channel(struct Client* cptr)
 }
 
 
+/** Helper to append a mode parameter to the parameter buffer.
+ * @param pbuf      The parameter buffer.
+ * @param pos       Pointer to current position in buffer.
+ * @param buflen    Total buffer length.
+ * @param param     The parameter string to append.
+ * @param prev_param Pointer to previous_parameter flag.
+ * @returns 1 if appended successfully, 0 if buffer too small.
+ */
+static int append_mode_param(char *pbuf, size_t *pos, size_t buflen,
+                             const char *param, int *prev_param)
+{
+  size_t len = strlen(param);
+  if (*pos + len + 2 < buflen) {
+    if (*prev_param)
+      pbuf[(*pos)++] = ' ';
+    memcpy(pbuf + *pos, param, len);
+    *pos += len;
+    pbuf[*pos] = '\0';
+    *prev_param = 1;
+    return 1;
+  }
+  return 0;
+}
+
 /** Fill mbuf/pbuf with modes from chptr
  * write the "simple" list of channel modes for channel chptr onto buffer mbuf
  * with the parameters in pbuf as visible by cptr.
@@ -1056,6 +1090,7 @@ void channel_modes(struct Client *cptr, char *mbuf, char *pbuf, int buflen,
                           struct Channel *chptr, struct Membership *member)
 {
   int previous_parameter = 0;
+  size_t pbuf_pos = 0;
 
   assert(0 != mbuf);
   assert(0 != pbuf);
@@ -1104,46 +1139,42 @@ void channel_modes(struct Client *cptr, char *mbuf, char *pbuf, int buflen,
     *mbuf++ = 'c';
   if (chptr->mode.exmode & EXMODE_STRIPCOLOR)
     *mbuf++ = 'S';
+  if (chptr->mode.exmode & EXMODE_PUBLICHISTORY)
+    *mbuf++ = 'H';
+  if (chptr->mode.exmode & EXMODE_NOSTORAGE)
+    *mbuf++ = 'P';
   if (chptr->mode.limit) {
     *mbuf++ = 'l';
-    ircd_snprintf(0, pbuf, buflen, "%u", chptr->mode.limit);
+    pbuf_pos = ircd_snprintf(0, pbuf, buflen, "%u", chptr->mode.limit);
     previous_parameter = 1;
   }
   if (*chptr->mode.redir) {
     *mbuf++ = 'L';
-    if (previous_parameter)
-      strcat(pbuf, " ");
-    strcat(pbuf, chptr->mode.redir);
-    previous_parameter = 1;
+    append_mode_param(pbuf, &pbuf_pos, buflen, chptr->mode.redir, &previous_parameter);
   }
   if (*chptr->mode.key) {
     *mbuf++ = 'k';
-    if (previous_parameter)
-      strcat(pbuf, " ");
     if (is_chan_op(cptr, chptr) || IsServer(cptr) || IsOper(cptr)) {
-      strcat(pbuf, chptr->mode.key);
-    } else
-      strcat(pbuf, "*");
-    previous_parameter = 1;
+      append_mode_param(pbuf, &pbuf_pos, buflen, chptr->mode.key, &previous_parameter);
+    } else {
+      append_mode_param(pbuf, &pbuf_pos, buflen, "*", &previous_parameter);
+    }
   }
   if (*chptr->mode.apass && (IsOpLevels(cptr) || !IsServer(cptr))) {
     *mbuf++ = 'A';
-    if (previous_parameter)
-      strcat(pbuf, " ");
     if (IsServer(cptr) || IsOper(cptr)) {
-      strcat(pbuf, chptr->mode.apass);
-    } else
-      strcat(pbuf, "*");
-    previous_parameter = 1;
+      append_mode_param(pbuf, &pbuf_pos, buflen, chptr->mode.apass, &previous_parameter);
+    } else {
+      append_mode_param(pbuf, &pbuf_pos, buflen, "*", &previous_parameter);
+    }
   }
   if (*chptr->mode.upass && (IsOpLevels(cptr) || !IsServer(cptr))) {
     *mbuf++ = 'U';
-    if (previous_parameter)
-      strcat(pbuf, " ");
     if (IsServer(cptr) || (member && IsChanOp(member) && OpLevel(member) == 0) || IsOper(cptr)) {
-      strcat(pbuf, chptr->mode.upass);
-    } else
-      strcat(pbuf, "*");
+      append_mode_param(pbuf, &pbuf_pos, buflen, chptr->mode.upass, &previous_parameter);
+    } else {
+      append_mode_param(pbuf, &pbuf_pos, buflen, "*", &previous_parameter);
+    }
   }
   *mbuf = '\0';
 }
@@ -1616,18 +1647,18 @@ int parse_extban(char *ban, struct ExtBan *extban, int level, char *prefix) {
     return 0;
 
   if (extban->flags & EBAN_NOCHILD)
-    ircd_strncpy(extban->mask, b, NICKLEN+USERLEN+HOSTLEN+3);
+    ircd_strncpy(extban->mask, b, sizeof(extban->mask));
   else {
     r = parse_extban(b, extban, level + 1, prefix);
     if (r == 0)
-      ircd_strncpy(extban->mask, b, NICKLEN+USERLEN+HOSTLEN+3);
+      ircd_strncpy(extban->mask, b, sizeof(extban->mask));
     else
       return r;
   }
 
   if (!(extban->flags & EBAN_MASKTYPE)) {
     char *sep;
-    ircd_strncpy(extban->mask, collapse(pretty_mask(extban->mask)), NICKLEN+USERLEN+HOSTLEN+3);
+    ircd_strncpy(extban->mask, collapse(pretty_mask(extban->mask)), sizeof(extban->mask));
     sep = strrchr(extban->mask, '@');
     extban->nu_len = sep - extban->mask;
   }
@@ -1721,6 +1752,8 @@ int SetAutoChanModes(struct Channel *chptr)
     EXMODE_NOMULTITARG,	'T',
     EXMODE_NOCOLOR,	'c',
     EXMODE_STRIPCOLOR,	'S',
+    EXMODE_PUBLICHISTORY, 'H',
+    EXMODE_NOSTORAGE,   'P',
     0, 0
   };
   unsigned int *flag_p;
@@ -2115,6 +2148,8 @@ modebuf_flush_int(struct ModeBuf *mbuf, int all)
     EXMODE_NOMULTITARG,	'T',
     EXMODE_NOCOLOR,	'c',
     EXMODE_STRIPCOLOR,	'S',
+    EXMODE_PUBLICHISTORY, 'H',
+    EXMODE_NOSTORAGE,   'P',
     0x0, 0x0
   };
   static int local_flags[] = {
@@ -2641,7 +2676,8 @@ modebuf_exmode(struct ModeBuf *mbuf, unsigned int mode)
   mode &= (MODE_ADD | MODE_DEL | EXMODE_ADMINONLY | EXMODE_OPERONLY |
            EXMODE_REGMODERATED | EXMODE_NONOTICES | EXMODE_PERSIST |
            EXMODE_SSLONLY | EXMODE_NOQUITPARTS | EXMODE_NOCTCPS |
-           EXMODE_NOMULTITARG | EXMODE_NOCOLOR | EXMODE_STRIPCOLOR);
+           EXMODE_NOMULTITARG | EXMODE_NOCOLOR | EXMODE_STRIPCOLOR |
+           EXMODE_PUBLICHISTORY | EXMODE_NOSTORAGE);
 
   if (!(mode & ~(MODE_ADD | MODE_DEL))) /* don't add empty modes... */
     return;
@@ -2796,6 +2832,8 @@ modebuf_extract(struct ModeBuf *mbuf, char *buf, int oplevels)
     EXMODE_NOMULTITARG,	'T',
     EXMODE_NOCOLOR,	'c',
     EXMODE_STRIPCOLOR,	'S',
+    EXMODE_PUBLICHISTORY, 'H',
+    EXMODE_NOSTORAGE,   'P',
     0x0, 0x0
   };
   unsigned int add;
@@ -3016,8 +3054,8 @@ mode_parse_redir(struct ParseState *state, int *flag_p)
       return;
     }
 
-    /* Reject invalid channel names */
-    if (!IsChannelName(t_str) || !strIsIrcCh(t_str))
+    /* Reject invalid channel names or those exceeding CHANNELLEN */
+    if (!IsChannelName(t_str) || !strIsIrcCh(t_str) || strlen(t_str) > CHANNELLEN)
       return;
   } else
     t_str = state->chptr->mode.redir;
@@ -3063,7 +3101,7 @@ mode_parse_redir(struct ParseState *state, int *flag_p)
     if (state->dir == MODE_DEL) /* remove the old redirect */
       *state->chptr->mode.redir = '\0';
     else
-      ircd_strncpy(state->chptr->mode.redir, t_str, CHANNELLEN);
+      ircd_strncpy(state->chptr->mode.redir, t_str, CHANNELLEN + 1);
   }
 }
 
@@ -3257,7 +3295,7 @@ mode_parse_key(struct ParseState *state, int *flag_p)
     if (state->dir == MODE_DEL) /* remove the old key */
       *state->chptr->mode.key = '\0';
     else
-      ircd_strncpy(state->chptr->mode.key, t_str, KEYLEN);
+      ircd_strncpy(state->chptr->mode.key, t_str, KEYLEN + 1);
   }
 }
 
@@ -3376,7 +3414,7 @@ mode_parse_upass(struct ParseState *state, int *flag_p)
     if (state->dir == MODE_DEL) /* remove the old upass */
       *state->chptr->mode.upass = '\0';
     else
-      ircd_strncpy(state->chptr->mode.upass, t_str, KEYLEN);
+      ircd_strncpy(state->chptr->mode.upass, t_str, KEYLEN + 1);
   }
 }
 
@@ -3501,7 +3539,7 @@ mode_parse_apass(struct ParseState *state, int *flag_p)
        * this is a BURST. */
       if (state->chptr->mode.apass[0] == '\0' ||
           (state->flags & MODE_PARSE_BURST))
-        ircd_strncpy(state->chptr->mode.apass, t_str, KEYLEN);
+        ircd_strncpy(state->chptr->mode.apass, t_str, KEYLEN + 1);
       /* Make it VERY clear to the user that this is a one-time password */
       if (MyUser(state->sptr)) {
 	send_reply(state->sptr, RPL_APASSWARN_SET, state->chptr->mode.apass);
@@ -3587,11 +3625,11 @@ bmatch(struct Ban *old_ban, struct Ban *new_ban)
 int apply_ban(struct Ban **banlist, struct Ban *newban, int do_free)
 {
   struct Ban *ban;
-  size_t count = 0;
+  //size_t count = 0;
 
   assert(newban->flags & (BAN_ADD|BAN_DEL));
   if (newban->flags & BAN_ADD) {
-    size_t totlen = 0;
+    //size_t totlen = 0;
     /* If a less specific *active* entry is found, fail.  */
     for (ban = *banlist; ban; ban = ban->next) {
       if (!bmatch(ban, newban) && !(ban->flags & BAN_DEL)) {
@@ -3599,10 +3637,10 @@ int apply_ban(struct Ban **banlist, struct Ban *newban, int do_free)
           free_ban(newban);
         return 1;
       }
-      if (!(ban->flags & (BAN_OVERLAPPED|BAN_DEL))) {
-        count++;
-        totlen += strlen(ban->banstr);
-      }
+      //if (!(ban->flags & (BAN_OVERLAPPED|BAN_DEL))) {
+      //  count++;
+      //  totlen += strlen(ban->banstr);
+      //}
     }
     /* Mark more specific entries and add this one to the end of the list. */
     while ((ban = *banlist) != NULL) {
@@ -3645,11 +3683,11 @@ int apply_ban(struct Ban **banlist, struct Ban *newban, int do_free)
 int apply_except(struct Ban **exceptlist, struct Ban *newban, int do_free)
 {
   struct Ban *ban;
-  size_t count = 0;
+  //size_t count = 0;
 
   assert(newban->flags & (BAN_ADD|BAN_DEL));
   if (newban->flags & BAN_ADD) {
-    size_t totlen = 0;
+    //size_t totlen = 0;
     /* If a less specific *active* entry is found, fail.  */
     for (ban = *exceptlist; ban; ban = ban->next) {
       if (!bmatch(ban, newban) && !(ban->flags & BAN_DEL)) {
@@ -3657,10 +3695,10 @@ int apply_except(struct Ban **exceptlist, struct Ban *newban, int do_free)
           free_ban(newban);
         return 1;
       }
-      if (!(ban->flags & (BAN_OVERLAPPED|BAN_DEL))) {
-        count++;
-        totlen += strlen(ban->banstr);
-      }
+      //if (!(ban->flags & (BAN_OVERLAPPED|BAN_DEL))) {
+      //  count++;
+      //  totlen += strlen(ban->banstr);
+      //}
     }
     /* Mark more specific entries and add this one to the end of the list. */
     while ((ban = *exceptlist) != NULL) {
@@ -3750,7 +3788,7 @@ mode_parse_ban(struct ParseState *state, int *flag_p)
   newban->flags = ((state->dir == MODE_ADD) ? BAN_ADD : BAN_DEL)
       | (*flag_p == MODE_BAN ? 0 : BAN_EXCEPTION);
   set_ban_mask(newban, pmask);
-  ircd_strncpy(newban->who, IsUser(state->sptr) ? cli_name(state->sptr) : "*", NICKLEN);
+  ircd_strncpy(newban->who, IsUser(state->sptr) ? cli_name(state->sptr) : "*", NICKLEN + 1);
   newban->when = TStime();
   apply_ban(&state->chptr->banlist, newban, 0);
 }
@@ -3935,7 +3973,7 @@ mode_parse_except(struct ParseState *state, int *flag_p)
   newban->flags = ((state->dir == MODE_ADD) ? BAN_ADD : BAN_DEL)
       | (*flag_p == MODE_EXCEPT ? 0 : BAN_EXCEPTION);
   set_ban_mask(newban, pmask);
-  ircd_strncpy(newban->who, IsUser(state->sptr) ? cli_name(state->sptr) : "*", NICKLEN);
+  ircd_strncpy(newban->who, IsUser(state->sptr) ? cli_name(state->sptr) : "*", NICKLEN + 1);
   newban->when = TStime();
   apply_except(&state->chptr->exceptlist, newban, 0);
 }
@@ -4436,6 +4474,8 @@ mode_parse(struct ModeBuf *mbuf, struct Client *cptr, struct Client *sptr,
     EXMODE_NOMULTITARG,	'T',
     EXMODE_NOCOLOR,	'c',
     EXMODE_STRIPCOLOR,	'S',
+    EXMODE_PUBLICHISTORY, 'H',
+    EXMODE_NOSTORAGE,   'P',
     0x0, 0x0
   };
 
@@ -4767,12 +4807,25 @@ mode_parse(struct ModeBuf *mbuf, struct Client *cptr, struct Client *sptr,
   }
 
   if (state.flags & MODE_PARSE_WIPEOUT) {
-    if (state.chptr->mode.limit && !(state.done & DONE_LIMIT))
+    /*
+     * The limit and the redirect are special-cased by modebuf_mode_uint()
+     * and modebuf_mode_string(): -l and -L take no parameter, so neither
+     * routine keeps a reference to what we pass it.  That makes it safe to
+     * clear them here, which we must do -- nothing else on the wipeout path
+     * ever will, and both are enforced straight off the stored value.
+     */
+    if (state.chptr->mode.limit && !(state.done & DONE_LIMIT)) {
       modebuf_mode_uint(state.mbuf, MODE_DEL | MODE_LIMIT,
 			state.chptr->mode.limit);
-    if (*state.chptr->mode.redir && !(state.done & DONE_REDIR))
+      if (state.flags & MODE_PARSE_SET)
+        state.chptr->mode.limit = 0;
+    }
+    if (*state.chptr->mode.redir && !(state.done & DONE_REDIR)) {
       modebuf_mode_string(state.mbuf, MODE_DEL | MODE_REDIRECT,
               state.chptr->mode.redir, 0);
+      if (state.flags & MODE_PARSE_SET)
+        *state.chptr->mode.redir = '\0';
+    }
     if (*state.chptr->mode.key && !(state.done & DONE_KEY_DEL))
       modebuf_mode_string(state.mbuf, MODE_DEL | MODE_KEY,
 			  state.chptr->mode.key, 0);

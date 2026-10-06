@@ -60,8 +60,8 @@
 SSL_CTX *ssl_server_ctx;
 SSL_CTX *ssl_client_ctx;
 
-SSL_CTX *ssl_init_server_ctx();
-SSL_CTX *ssl_init_client_ctx();
+SSL_CTX *ssl_init_server_ctx(void);
+SSL_CTX *ssl_init_client_ctx(void);
 int ssl_verify_callback(int preverify_ok, X509_STORE_CTX *cert);
 void ssl_set_nonblocking(SSL *s);
 int ssl_smart_shutdown(SSL *ssl);
@@ -179,6 +179,14 @@ SSL_CTX *ssl_init_server_ctx(void)
       return NULL;
     }
   }
+
+#if defined(SSL_CTX_set_ecdh_auto)
+  SSL_CTX_set_ecdh_auto(server_ctx, 1);
+#elif OPENSSL_VERSION_NUMBER < 0x10100000L
+  SSL_CTX_set_tmp_ecdh(server_ctx, EC_KEY_new_by_curve_name(NID_X9_62_prime256v1));
+#else
+#endif
+  SSL_CTX_set_options(server_ctx, SSL_OP_SINGLE_ECDH_USE|SSL_OP_SINGLE_DH_USE);
 
   return server_ctx;
 }
@@ -302,6 +310,13 @@ int ssl_accept(struct Client *cptr)
   return -1;
 }
 
+/** Is the pending handshake waiting to write (as opposed to read)?
+ *  Decides whether writable interest stays armed during SSL_accept. */
+int ssl_want_write(struct Client *cptr)
+{
+  return cli_socket(cptr).ssl && SSL_want_write(cli_socket(cptr).ssl);
+}
+
 int ssl_starttls(struct Client *cptr)
 {
   if (!cli_socket(cptr).ssl) {
@@ -343,7 +358,7 @@ void ssl_doerror(struct Client *cptr)
   sendto_opmask_butone(0, SNO_TCPCOMMON, "SSL Error for client %s: %s", cli_name(cptr), ebuf);
 }
 
-void ssl_doerror_anon()
+void ssl_doerror_anon(void)
 {
   unsigned long err = 0;
   char ebuf[120];
@@ -525,7 +540,7 @@ int ssl_murder(void *ssl, int fd, const char *buf)
 {
   if (!ssl) {
     if (buf)
-      write(fd, buf, strlen(buf));
+      (void)!write(fd, buf, strlen(buf));
   } else {
     if (buf)
       SSL_write((SSL *) ssl, buf, strlen(buf));
@@ -548,15 +563,12 @@ char *ssl_get_cipher(SSL *ssl)
   int bits;
   const SSL_CIPHER *c;
 
-  buf[0] = '\0';
-  strcpy(buf, SSL_get_version(ssl));
-  strcat(buf, "-");
-  strcat(buf, SSL_get_cipher(ssl));
   c = SSL_get_current_cipher(ssl);
   SSL_CIPHER_get_bits(c, &bits);
-  strcat(buf, "-");
-  strcat(buf, (char *)itoa(bits));
-  strcat(buf, "bits");
+
+  /* Use ircd_snprintf for safe bounded string formatting */
+  ircd_snprintf(0, buf, sizeof(buf), "%s-%s-%dbits",
+                SSL_get_version(ssl), SSL_get_cipher(ssl), bits);
   return (buf);
 }
 

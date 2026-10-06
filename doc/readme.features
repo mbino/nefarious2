@@ -25,7 +25,7 @@ give should NOT start with a "." and you should not use quotes.
 
 RELIABLE_CLOCK
  * Type: boolean
- * Default: FALSE
+ * Default: TRUE
 
 You should really ONLY specify "TRUE" here when your system clock is
 stable and accurate at all times (within a few seconds).  If you are
@@ -1293,6 +1293,13 @@ DERESTRICT_HIDECHANS
 
 When enable user mode +p can be set by any user. When disabled only IRCops
 with the hide_channels privilege can set user mode +p.
+
+VALID_UTF8_CHANNELS_ONLY
+ * Type: boolean
+ * Default: TRUE
+
+When enabled, channels will not be joinable if they have non-compliant UTF8
+sequences
 
 CHMODE_a
  * Type: boolean
