@@ -799,22 +799,27 @@ int set_nick_name(struct Client* cptr, struct Client* sptr,
        * however, allow to do two nick changes immediately after another
        * before limiting the nick flood. -Run
        */
-      if (CurrentTime < cli_nextnick(cptr))
-      {
-        cli_nextnick(cptr) += 2;
-        send_reply(cptr, ERR_NICKTOOFAST, parv[1],
-                   cli_nextnick(cptr) - CurrentTime);
-        /* Send error message */
-        sendcmdto_one(cptr, CMD_NICK, cptr, "%s", cli_name(cptr));
-        /* bounce NICK to user */
-        return 0;                /* ignore nick change! */
-      }
-      else {
-        /* Limit total to 1 change per NICK_DELAY seconds: */
-        cli_nextnick(cptr) += NICK_DELAY;
-        /* However allow _maximal_ 1 extra consecutive nick change: */
-        if (cli_nextnick(cptr) < CurrentTime)
-          cli_nextnick(cptr) = CurrentTime;
+      /* A nick change forced by services (SVSNICK, e.g. nick protection) is
+       * not subject to the nick flood limit, and does not count towards it:
+       * otherwise a user who just changed nick keeps a protected nick. */
+      if (!svsnick) {
+        if (CurrentTime < cli_nextnick(cptr))
+        {
+          cli_nextnick(cptr) += 2;
+          send_reply(cptr, ERR_NICKTOOFAST, parv[1],
+                     cli_nextnick(cptr) - CurrentTime);
+          /* Send error message */
+          sendcmdto_one(cptr, CMD_NICK, cptr, "%s", cli_name(cptr));
+          /* bounce NICK to user */
+          return 0;                /* ignore nick change! */
+        }
+        else {
+          /* Limit total to 1 change per NICK_DELAY seconds: */
+          cli_nextnick(cptr) += NICK_DELAY;
+          /* However allow _maximal_ 1 extra consecutive nick change: */
+          if (cli_nextnick(cptr) < CurrentTime)
+            cli_nextnick(cptr) = CurrentTime;
+        }
       }
       /* Invalidate all bans against the user so we check them again */
       for (member = (cli_user(cptr))->channel; member;
